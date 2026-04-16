@@ -10,6 +10,7 @@ output:
     theme: cosmo
     highlight: tango
     code_folding: hide
+    self_contained: true
 ---
 
 ```{r setup, include=FALSE}
@@ -176,19 +177,19 @@ tier_summary <- df %>%
   filter(call_result != "correct") %>%
   mutate(
     tier = case_when(
-      str_detect(call_result_tiered, "T1") ~ "< 0.1\" (Broadcast threshold)",
-      str_detect(call_result_tiered, "T2") ~ "0.1\" to ¼ baseball",
-      str_detect(call_result_tiered, "T3") ~ "¼ to ½ baseball",
-      str_detect(call_result_tiered, "T4") ~ "½ to 1 baseball",
+      str_detect(call_result_tiered, "T1") ~ "< 0.1 inch (Broadcast threshold)",
+      str_detect(call_result_tiered, "T2") ~ "0.1 inch to 1/4 baseball",
+      str_detect(call_result_tiered, "T3") ~ "1/4 to 1/2 baseball",
+      str_detect(call_result_tiered, "T4") ~ "1/2 to 1 baseball",
       str_detect(call_result_tiered, "T5") ~ "1 to 2 baseballs",
       str_detect(call_result_tiered, "T6") ~ "2+ baseballs (Egregious)",
       TRUE ~ "Unknown"
     ),
     tier = factor(tier, levels = c(
-      "< 0.1\" (Broadcast threshold)",
-      "0.1\" to ¼ baseball",
-      "¼ to ½ baseball",
-      "½ to 1 baseball",
+      "< 0.1 inch (Broadcast threshold)",
+      "0.1 inch to 1/4 baseball",
+      "1/4 to 1/2 baseball",
+      "1/2 to 1 baseball",
       "1 to 2 baseballs",
       "2+ baseballs (Egregious)"
     ))
@@ -259,7 +260,7 @@ ggplotly(p, tooltip = c("x","y")) %>%
   layout(margin = list(b = 80))
 ```
 
-The majority of missed calls — **`r tier_summary %>% filter(str_detect(tier, "T1|T2")) %>% summarise(p = percent(sum(as.numeric(str_remove_all(pct,"%")))/100)) %>% pull(p)`** — fell within one quarter of a baseball width from the zone boundary. These are genuinely difficult calls that reasonable people can disagree on. But **`r tier_summary %>% filter(str_detect(tier, "T4|T5|T6")) %>% summarise(n = format(sum(as.numeric(str_remove_all(n,","))), big.mark=",")) %>% pull(n)`** missed calls were wrong by more than half a baseball width. Those are not close calls.
+The majority of missed calls — **`r tier_summary %>% filter(tier %in% c("< 0.1 inch (Broadcast threshold)", "0.1 inch to 1/4 baseball")) %>% summarise(p = percent(sum(pct), accuracy = 0.1)) %>% pull(p)`** — fell within one quarter of a baseball width from the zone boundary. These are genuinely difficult calls that reasonable people can disagree on. But **`r tier_summary %>% filter(tier %in% c("1/2 to 1 baseball", "1 to 2 baseballs", "2+ baseballs (Egregious)")) %>% summarise(total = format(sum(n), big.mark = ",")) %>% pull(total)`** missed calls were wrong by more than half a baseball width. Those are not close calls.
 
 ### The Direction of the Bias
 
