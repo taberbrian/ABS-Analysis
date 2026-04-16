@@ -1,6 +1,6 @@
 ## White Paper
 View the rendered white paper here:
-https://htmlpreview.github.io/?https://github.com/taberbrian/ABS-Analysis/blob/main/rmd/ABS_WhitePaper.html
+https://taberbrian.github.io/ABS-Analysis/ABS_WhitePaper.html
 
 ## This Is Why There Is ABS
 A data-driven analysis of 1.4 million ball-strike
