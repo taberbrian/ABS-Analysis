@@ -1,0 +1,771 @@
+---
+title: "This Is Why There Is ABS"
+author: "BT"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 10,
+  fig.height = 6
+)
+```
+
+```{r libraries, echo=FALSE}
+library(tidyverse)
+library(lubridate)
+library(plotly)
+library(scales)
+library(knitr)
+library(kableExtra)
+```
+
+```{r load_data, echo=FALSE}
+# Load classified dataset from Python pipeline
+df <- read_csv("E:/Projects/Data/ABS/python/called_clean_classified.csv")
+
+# Pitch type display names
+pitch_names <- c(
+  FF = "4-Seam Fastball", SI = "Sinker",    SL = "Slider",
+  CH = "Changeup",        FC = "Cutter",    CU = "Curveball",
+  ST = "Sweeper",         FS = "Splitter",  KC = "Knuckle Curve",
+  SV = "Slurve",          FA = "Fastball",  EP = "Eephus",
+  KN = "Knuckleball",     FO = "Forkball",  CS = "Slow Curve",
+  SC = "Screwball",       UN = "Unknown"
+)
+
+df <- df %>%
+  mutate(
+    pitch_name    = pitch_names[pitch_type],
+    game_year     = as.factor(game_year),
+    height_bucket = case_when(
+      batter_height_in <= 68 ~ "5'8\" and under",
+      batter_height_in <= 71 ~ "5'9\" to 5'11\"",
+      batter_height_in <= 73 ~ "6'0\" to 6'1\"",
+      batter_height_in <= 75 ~ "6'2\" to 6'3\"",
+      TRUE                   ~ "6'4\" and over"
+    ),
+    height_bucket = factor(height_bucket, levels = c(
+      "5'8\" and under", "5'9\" to 5'11\"",
+      "6'0\" to 6'1\"",  "6'2\" to 6'3\"",
+      "6'4\" and over"
+    ))
+  )
+
+cat(sprintf("Loaded: %s rows, %s columns\n",
+            format(nrow(df), big.mark=","),
+            ncol(df)))
+cat(sprintf("Years: %s\n",
+            paste(sort(unique(df$game_year)), collapse=", ")))
+```
+
+## Why ABS Was the Only Answer
+
+```{r hook_numbers, echo=FALSE}
+total_missed <- df %>%
+  filter(call_result != "correct") %>%
+  nrow()
+
+total_games <- df %>%
+  summarise(games = n_distinct(game_pk)) %>%
+  pull(games)
+
+per_game <- round(total_missed / total_games, 1)
+
+seasons <- df %>%
+  summarise(games = n_distinct(game_pk),
+            missed = sum(call_result != "correct"),
+            .by = game_year) %>%
+  arrange(game_year)
+```
+
+Between 2022 and 2025 — the final four seasons of fully human ball-strike calling in Major League Baseball — umpires made **`r format(total_missed, big.mark=",")`** incorrect ball-strike decisions. That is an average of **`r per_game` missed calls per game**. Every game. Every season. For four straight years.
+
+This is not an argument against umpires. It is a data-driven examination of why the Automated Ball-Strike system was introduced in 2026 — and why improvement alone was never going to be enough.
+
+---
+
+## Introduction
+
+### What Is ABS?
+
+The Automated Ball-Strike system uses Hawk-Eye camera technology — the same system that has tracked every pitch location in MLB since 2015 — to make ball-strike calls automatically. In 2026, MLB implemented ABS with a challenge system — each team retains up to two unsuccessful challenges per game, initiated by the batter, pitcher, or catcher.
+
+### What This Analysis Covers
+
+This report examines **`r format(nrow(df), big.mark=",")`** called pitches from the 2022 through 2025 MLB seasons — every pitch where a human umpire made a ball-strike decision. Swinging strikes, balls in play, foul balls, and hit-by-pitches are excluded because they require no umpire judgment.
+
+Each pitch is evaluated against the Hawk-Eye measured strike zone for that specific batter on that specific pitch — not a generic zone. A call is classified as missed only when the ball's center was fully outside the zone on called strikes, or fully inside the zone on called balls, accounting for the physical radius of the baseball.
+
+### A Note on Methodology
+
+Statcast provides the ball's center position (`plate_x`, `plate_z`) and each batter's personal zone boundaries (`sz_top`, `sz_bot`) measured in real time. We applied a **1.45 inch ball radius buffer** to all zone boundaries — a pitch is only considered a missed call if the entire baseball was outside the zone, not just its center. This is the most conservative and defensible definition of a missed call.
+
+---
+
+## Chapter 1: The Scale of the Problem
+
+```{r ch1_data, echo=FALSE}
+# Season-level summary
+season_summary <- df %>%
+  group_by(game_year) %>%
+  summarise(
+    decisions  = n(),
+    missed     = sum(call_result != "correct"),
+    miss_str   = sum(call_result == "missed_call_strike"),
+    miss_ball  = sum(call_result == "missed_call_ball"),
+    games      = n_distinct(game_pk),
+    .groups    = "drop"
+  ) %>%
+  mutate(
+    miss_rate  = missed / decisions,
+    per_game   = missed / games,
+    correct    = decisions - missed
+  )
+```
+
+Not every pitch requires an umpire to make a ball-strike decision. Swinging strikes, balls hit into play, and foul balls are decided by the batter — no judgment call needed. Of the roughly 720,000 pitches thrown each season, approximately **52% required a human umpire to call ball or strike**. This analysis examines only those pitches.
+
+Of those umpire decisions, the miss rate across all four seasons was consistent — and consistently wrong.
+
+```{r ch1_table, echo=FALSE}
+season_summary %>%
+  mutate(
+    miss_rate = percent(miss_rate, accuracy = 0.1),
+    per_game  = round(per_game, 1),
+    decisions = format(decisions, big.mark = ","),
+    missed    = format(missed,   big.mark = ","),
+    games     = format(games,    big.mark = ",")
+  ) %>%
+  select(
+    Season    = game_year,
+    Decisions = decisions,
+    `Missed`  = missed,
+    `Miss Rate` = miss_rate,
+    Games     = games,
+    `Per Game`  = per_game
+  ) %>%
+  kable(align = c("l","r","r","r","r","r"),
+        caption = "Ball-strike missed calls by season, 2022-2025") %>%
+  kable_styling(
+    bootstrap_options = c("striped","hover","condensed"),
+    full_width        = FALSE
+  )
+```
+
+Across four seasons and **`r format(sum(season_summary$games), big.mark=",")`** games, umpires missed **`r format(sum(season_summary$missed), big.mark=",")`** ball-strike calls. The miss rate improved modestly from 2022 to 2025 — but never dropped below 7%. At its best, umpires still missed roughly one in fourteen calls they were asked to make.
+
+### Borderline vs. Egregious
+
+Not all missed calls are equal. A pitch that clips the edge of the zone by a fraction of an inch is a genuinely difficult call. A pitch missed by the width of an entire baseball is not. We classified every missed call into six severity tiers based on distance from the zone boundary.
+
+```{r ch1_severity, echo=FALSE}
+# Tier summary across all seasons
+tier_summary <- df %>%
+  filter(call_result != "correct") %>%
+  mutate(
+    tier = case_when(
+      str_detect(call_result_tiered, "T1") ~ "< 0.1\" (Broadcast threshold)",
+      str_detect(call_result_tiered, "T2") ~ "0.1\" to ¼ baseball",
+      str_detect(call_result_tiered, "T3") ~ "¼ to ½ baseball",
+      str_detect(call_result_tiered, "T4") ~ "½ to 1 baseball",
+      str_detect(call_result_tiered, "T5") ~ "1 to 2 baseballs",
+      str_detect(call_result_tiered, "T6") ~ "2+ baseballs (Egregious)",
+      TRUE ~ "Unknown"
+    ),
+    tier = factor(tier, levels = c(
+      "< 0.1\" (Broadcast threshold)",
+      "0.1\" to ¼ baseball",
+      "¼ to ½ baseball",
+      "½ to 1 baseball",
+      "1 to 2 baseballs",
+      "2+ baseballs (Egregious)"
+    ))
+  ) %>%
+  count(tier) %>%
+  mutate(
+    pct        = n / sum(n),
+    cumulative = cumsum(pct)
+  )
+
+tier_summary <- df %>%
+  filter(call_result != "correct") %>%
+  mutate(
+    tier = case_when(
+      str_detect(call_result_tiered, "T1") ~ "< 0.1 inch (Broadcast threshold)",
+      str_detect(call_result_tiered, "T2") ~ "0.1 inch to 1/4 baseball",
+      str_detect(call_result_tiered, "T3") ~ "1/4 to 1/2 baseball",
+      str_detect(call_result_tiered, "T4") ~ "1/2 to 1 baseball",
+      str_detect(call_result_tiered, "T5") ~ "1 to 2 baseballs",
+      str_detect(call_result_tiered, "T6") ~ "2+ baseballs (Egregious)",
+      TRUE ~ "Unknown"
+    ),
+    tier = factor(tier, levels = c(
+      "< 0.1 inch (Broadcast threshold)",
+      "0.1 inch to 1/4 baseball",
+      "1/4 to 1/2 baseball",
+      "1/2 to 1 baseball",
+      "1 to 2 baseballs",
+      "2+ baseballs (Egregious)"
+    ))
+  ) %>%
+  count(tier) %>%
+  mutate(
+    pct        = n / sum(n),
+    cumulative = cumsum(pct)
+  )
+```
+
+```{r ch1_severity_chart, echo=FALSE}
+p <- tier_summary %>%
+  ggplot(aes(x = tier, y = n, fill = tier)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c(
+  "< 0.1 inch (Broadcast threshold)" = "#d4e6f1",
+  "0.1 inch to 1/4 baseball"         = "#85c1e9",
+  "1/4 to 1/2 baseball"              = "#3498db",
+  "1/2 to 1 baseball"                = "#1a5276",
+  "1 to 2 baseballs"                 = "#e74c3c",
+  "2+ baseballs (Egregious)"         = "#7b241c"
+)) +
+  scale_y_continuous(labels = comma) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 12)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.minor  = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.title        = element_text(face = "bold"),
+    plot.subtitle     = element_text(color = "grey50")
+  ) +
+  labs(
+    title    = "Missed ball-strike calls by severity tier",
+    subtitle = "2022-2025 combined — all four seasons",
+    x        = NULL,
+    y        = "Number of missed calls"
+  )
+
+ggplotly(p, tooltip = c("x","y")) %>%
+  layout(margin = list(b = 80))
+```
+
+The majority of missed calls — **`r tier_summary %>% filter(str_detect(tier, "T1|T2")) %>% summarise(p = percent(sum(as.numeric(str_remove_all(pct,"%")))/100)) %>% pull(p)`** — fell within one quarter of a baseball width from the zone boundary. These are genuinely difficult calls that reasonable people can disagree on. But **`r tier_summary %>% filter(str_detect(tier, "T4|T5|T6")) %>% summarise(n = format(sum(as.numeric(str_remove_all(n,","))), big.mark=",")) %>% pull(n)`** missed calls were wrong by more than half a baseball width. Those are not close calls.
+
+### The Direction of the Bias
+
+Missed calls do not favor one side equally. A missed strike — a pitch inside the zone called a ball — hurts the pitcher and defense. A missed ball — a pitch outside the zone called a strike — hurts the batter.
+
+```{r ch1_direction, echo=FALSE}
+direction_summary <- df %>%
+  filter(call_result != "correct") %>%
+  mutate(
+    direction = if_else(call_result == "missed_call_strike",
+                        "Missed Strike\n(called ball, was strike)",
+                        "Missed Ball\n(called strike, was ball)")
+  ) %>%
+  count(game_year, direction)
+
+p2 <- direction_summary %>%
+  ggplot(aes(x = game_year, y = n,
+             fill = direction, group = direction)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c(
+    "Missed Strike\n(called ball, was strike)" = "#2980b9",
+    "Missed Ball\n(called strike, was ball)"   = "#e74c3c"
+  )) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position   = "bottom",
+    legend.title      = element_blank(),
+    panel.grid.minor  = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.title        = element_text(face = "bold"),
+    plot.subtitle     = element_text(color = "grey50")
+  ) +
+  labs(
+    title    = "Missed strikes vs missed balls by season",
+    subtitle = "Missed strike = called ball that was in zone  |  Missed ball = called strike that was outside zone",
+    x        = "Season",
+    y        = "Number of missed calls"
+  )
+
+ggplotly(p2, tooltip = c("x","y","fill")) %>%
+  layout(margin = list(b = 80))
+```
+
+The most striking finding in Chapter 1 is the 2025 shift. In 2022 through 2024, umpires missed strikes at a roughly consistent rate above missed balls. In 2025 — the final season before ABS — that ratio inverted. Umpires called more pitches outside the zone as strikes than they missed strikes inside the zone. Whether this reflects deliberate adjustment, unconscious over correction, or something else entirely, the data cannot say. What it does say is that the direction of the bias was not stable — and an unstable bias is harder to correct for than a consistent one.
+
+---
+
+## Chapter 2: Counting the Count
+
+```{r ch2_data, echo=FALSE}
+count_summary <- df %>%
+  filter(!is.na(balls), !is.na(strikes)) %>%
+  mutate(count = paste0(balls, "-", strikes)) %>%
+  group_by(count, balls, strikes) %>%
+  summarise(
+    total         = n(),
+    missed        = sum(call_result != "correct"),
+    missed_strike = sum(call_result == "missed_call_strike"),
+    missed_ball   = sum(call_result == "missed_call_ball"),
+    .groups       = "drop"
+  ) %>%
+  mutate(
+    miss_rate        = missed / total,
+    missed_str_rate  = missed_strike / total,
+    missed_ball_rate = missed_ball / total
+  ) %>%
+  arrange(desc(miss_rate))
+```
+
+If missed calls were purely random human error, the miss rate would be roughly consistent regardless of game situation. It is not.
+
+The ball-strike count is one of the most significant factors in how a pitch gets called. A pitch on the corner in a 2-0 count — where the batter has the advantage — is called differently than the identical pitch in an 0-2 count, where the pitcher has the advantage. The zone does not change. The count does.
+
+```{r ch2_table, echo=FALSE}
+count_summary %>%
+  mutate(
+    miss_rate        = percent(miss_rate,        accuracy = 0.1),
+    missed_str_rate  = percent(missed_str_rate,  accuracy = 0.1),
+    missed_ball_rate = percent(missed_ball_rate, accuracy = 0.1),
+    total            = format(total,   big.mark = ","),
+    missed           = format(missed,  big.mark = ",")
+  ) %>%
+  select(
+    Count            = count,
+    `Total`          = total,
+    `Missed`         = missed,
+    `Miss Rate`      = miss_rate,
+    `Miss Strike%`   = missed_str_rate,
+    `Miss Ball%`     = missed_ball_rate
+  ) %>%
+  kable(align = c("l","r","r","r","r","r"),
+        caption = "Miss rate by ball-strike count, 2022-2025 combined") %>%
+  kable_styling(
+    bootstrap_options = c("striped","hover","condensed"),
+    full_width        = FALSE
+  )
+```
+
+```{r ch2_chart, echo=FALSE}
+count_order <- c("0-0","0-1","0-2",
+                 "1-0","1-1","1-2",
+                 "2-0","2-1","2-2",
+                 "3-0","3-1","3-2")
+
+p3 <- count_summary %>%
+  mutate(count = factor(count, levels = count_order)) %>%
+  filter(count %in% count_order) %>%
+  select(count, missed_strike, missed_ball, total) %>%
+  pivot_longer(
+    cols      = c(missed_strike, missed_ball),
+    names_to  = "miss_type",
+    values_to = "n"
+  ) %>%
+  mutate(
+    rate      = n / total,
+    miss_type = if_else(miss_type == "missed_strike",
+                        "Missed Strike (called ball, was strike)",
+                        "Missed Ball (called strike, was ball)")
+  ) %>%
+  ggplot(aes(x = count, y = rate,
+             fill = miss_type)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(
+  name   = "Miss Type",
+  values = c(
+    "Missed Strike (called ball, was strike)" = "#2980b9",
+    "Missed Ball (called strike, was ball)"   = "#e74c3c"
+  )) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position    = "bottom",
+    legend.title       = element_text(),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(color = "grey50")
+  ) +
+  labs(
+    title    = "Missed strikes vs missed balls by count",
+    subtitle = "Blue = missed strike (favors batter)  |  Red = missed ball (favors pitcher)",
+    x        = "Count (balls-strikes)",
+    y        = "Miss rate"
+  )
+
+ggplotly(p3, tooltip = c("x","y","fill")) %>%
+  layout(margin = list(b = 100))
+```
+
+The pattern tells two stories simultaneously.
+
+On hitter's counts — 2-0, 3-0, 3-1, 1-0 — the blue bar dominates. Umpires miss significantly more strikes than balls, meaning pitches inside the zone are being called balls more often. This favors the batter and prolongs at-bats, giving hitters more chances when they already hold the advantage.
+
+On pitcher's counts — 0-2, 1-2, 2-2 — the gap narrows considerably. Missed strikes and missed balls become nearly equal, and in some cases the red bar edges ahead. Umpires are no longer leaning toward the batter when the pitcher has two strikes.
+
+The 0-2 count is the starkest example. With the pitcher one strike away from a strikeout, the missed strike rate drops to just 1.0% — the lowest of any count. Umpires are effectively giving batters more borderline pitches when they are most vulnerable.
+
+This is not random error. Random error would distribute misses evenly across all counts and both directions. What the data shows is systematic directional bias — umpires unconsciously adjust not just how often they miss, but **which way they miss**, based on who holds the advantage in the at-bat.
+
+ABS does not have a count. It does not know the score, the inning, or who is batting. It calls the pitch that crosses the plate — nothing more.
+
+---
+
+## Chapter 3: Which Pitch?
+
+```{r ch3_data, echo=FALSE}
+pitch_summary <- df %>%
+  filter(!is.na(pitch_type), !is.na(pitch_name)) %>%
+  group_by(pitch_type, pitch_name) %>%
+  summarise(
+    total         = n(),
+    missed        = sum(call_result != "correct"),
+    missed_strike = sum(call_result == "missed_call_strike"),
+    missed_ball   = sum(call_result == "missed_call_ball"),
+    .groups       = "drop"
+  ) %>%
+  mutate(
+    miss_rate        = missed / total,
+    missed_str_rate  = missed_strike / total,
+    missed_ball_rate = missed_ball / total
+  ) %>%
+  filter(total >= 500) %>%
+  arrange(desc(miss_rate))
+```
+
+Not all pitches are missed equally. The type of pitch thrown influences how often an umpire gets the call wrong — and the pattern reveals something interesting about what actually causes missed calls at the plate.
+
+```{r ch3_chart, echo=FALSE}
+p4 <- pitch_summary %>%
+  mutate(pitch_name = fct_reorder(pitch_name, miss_rate)) %>%
+  select(pitch_name, missed_strike, missed_ball, total) %>%
+  pivot_longer(
+    cols      = c(missed_strike, missed_ball),
+    names_to  = "miss_type",
+    values_to = "n"
+  ) %>%
+  mutate(
+    rate      = n / total,
+    miss_type = if_else(miss_type == "missed_strike",
+                        "Missed Strike (called ball, was strike)",
+                        "Missed Ball (called strike, was ball)")
+  ) %>%
+  ggplot(aes(x = pitch_name, y = rate, fill = miss_type)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(
+    name   = "Miss Type",
+    values = c(
+      "Missed Strike (called ball, was strike)" = "#2980b9",
+      "Missed Ball (called strike, was ball)"   = "#e74c3c"
+    )
+  ) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  coord_flip() +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position   = "bottom",
+    legend.title      = element_text(),
+    panel.grid.minor  = element_blank(),
+    panel.grid.major.y = element_blank(),
+    plot.title        = element_text(face = "bold"),
+    plot.subtitle     = element_text(color = "grey50")
+  ) +
+  labs(
+    title    = "Miss rate by pitch type",
+    subtitle = "Ordered by total miss rate — pitches with fewer than 500 called pitches excluded",
+    x        = NULL,
+    y        = "Miss rate"
+  )
+
+ggplotly(p4, tooltip = c("x","y","fill")) %>%
+  layout(margin = list(l = 120, b = 80))
+```
+
+```{r ch3_table, echo=FALSE}
+pitch_summary %>%
+  mutate(
+    miss_rate        = percent(miss_rate,        accuracy = 0.1),
+    missed_str_rate  = percent(missed_str_rate,  accuracy = 0.1),
+    missed_ball_rate = percent(missed_ball_rate, accuracy = 0.1),
+    total            = format(total,  big.mark = ","),
+    missed           = format(missed, big.mark = ",")
+  ) %>%
+  select(
+    `Pitch Type`     = pitch_name,
+    `Total`          = total,
+    `Missed`         = missed,
+    `Miss Rate`      = miss_rate,
+    `Miss Strike%`   = missed_str_rate,
+    `Miss Ball%`     = missed_ball_rate
+  ) %>%
+  kable(align = c("l","r","r","r","r","r"),
+        caption = "Miss rate by pitch type, 2022-2025 combined") %>%
+  kable_styling(
+    bootstrap_options = c("striped","hover","condensed"),
+    full_width        = FALSE
+  )
+```
+
+The sinker leads all common pitch types at 8.9% — nearly double the splitter's 4.5%. The pattern is not accidental. Sinkers, cutters, and four-seam fastballs share a common characteristic: late movement. A sinker thrown at 93 mph that drops sharply in the final feet before the plate is difficult for a batter to read — and apparently equally difficult for an umpire to place precisely in the zone.
+
+Off-speed pitches tell the opposite story. Changeups and splitters — which rely on velocity differential rather than late break — are called more accurately despite being among the most deceptive pitches for batters. The deception that fools hitters does not appear to fool umpires. What fools umpires is movement.
+
+The missed ball rate tells a parallel story. Sinkers and four-seam fastballs produce the highest missed ball rates too — umpires call more pitches outside the zone as strikes on these pitch types than on off-speed pitches. Late-moving pitches are harder to locate precisely regardless of which direction the call goes wrong.
+
+ABS does not watch the ball move. It measures where the ball is when it crosses the plate — the endpoint, not the journey. Movement that fools the human eye is irrelevant to a camera system tracking ball position in three dimensions.
+
+---
+
+## Chapter 4: Does Height Matter?
+
+```{r ch4_data, echo=FALSE}
+height_summary <- df %>%
+  filter(!is.na(height_bucket)) %>%
+  group_by(height_bucket) %>%
+  summarise(
+    total         = n(),
+    missed        = sum(call_result != "correct"),
+    missed_strike = sum(call_result == "missed_call_strike"),
+    missed_ball   = sum(call_result == "missed_call_ball"),
+    .groups       = "drop"
+  ) %>%
+  mutate(
+    miss_rate        = missed / total,
+    missed_str_rate  = missed_strike / total,
+    missed_ball_rate = missed_ball / total
+  )
+
+# Zone location analysis — top vs bottom by height bucket
+height_location <- df %>%
+  filter(!is.na(height_bucket),
+         call_result != "correct") %>%
+  mutate(
+    zone_mid  = (sz_top + sz_bot) / 2,
+    miss_zone = if_else(plate_z > zone_mid, "Upper Zone", "Lower Zone"),
+    miss_type = if_else(call_result == "missed_call_strike",
+                        "Missed Strike", "Missed Ball")
+  ) %>%
+  group_by(height_bucket, miss_type, miss_zone) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(height_bucket, miss_type) %>%
+  mutate(pct = n / sum(n)) %>%
+  ungroup()
+```
+
+The rulebook defines the strike zone individually for each batter. The top of the zone is the midpoint between the batter's shoulders and belt. The bottom is the hollow of the knee. A 5'6" batter and a 6'7" batter have meaningfully different zones — not just in height, but in proportion.
+
+Hawk-Eye measures each batter's zone in real time on every pitch. The question is whether umpires call that personalized zone consistently across different body types — or whether the human tendency to anchor to a standard reference point introduces height-based bias.
+
+```{r ch4_rate_chart, echo=FALSE}
+p5 <- height_summary %>%
+  select(height_bucket, missed_strike, missed_ball, total) %>%
+  pivot_longer(
+    cols      = c(missed_strike, missed_ball),
+    names_to  = "miss_type",
+    values_to = "n"
+  ) %>%
+  mutate(
+    rate      = n / total,
+    miss_type = if_else(miss_type == "missed_strike",
+                        "Missed Strike (called ball, was strike)",
+                        "Missed Ball (called strike, was ball)")
+  ) %>%
+  ggplot(aes(x = height_bucket, y = rate, fill = miss_type)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(
+    name   = "Miss Type",
+    values = c(
+      "Missed Strike (called ball, was strike)" = "#2980b9",
+      "Missed Ball (called strike, was ball)"   = "#e74c3c"
+    )
+  ) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position    = "bottom",
+    legend.title       = element_text(),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(color = "grey50")
+  ) +
+  labs(
+    title    = "Miss rate by batter height",
+    subtitle = "Missed strikes vs missed balls across height buckets",
+    x        = NULL,
+    y        = "Miss rate"
+  )
+
+ggplotly(p5, tooltip = c("x","y","fill")) %>%
+  layout(margin = list(b = 100))
+```
+
+The overall miss rate is nearly identical across all height groups — ranging from 7.2% to 7.5%. Height alone does not make an umpire more or less likely to miss a call. But the overall rate conceals a more interesting pattern.
+
+```{r ch4_location_chart, echo=FALSE}
+p6 <- height_location %>%
+  mutate(
+    miss_type = factor(miss_type,
+                       levels = c("Missed Strike", "Missed Ball")),
+    fill_group = paste(miss_type, miss_zone, sep = " - ")
+  ) %>%
+  ggplot(aes(x = height_bucket, y = pct,
+             fill = fill_group)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~miss_type, ncol = 2) +
+  scale_fill_manual(
+    name   = "Zone Location",
+    values = c(
+      "Missed Ball - Upper Zone"   = "#f1948a",   # light red
+      "Missed Ball - Lower Zone"   = "#922b21",   # dark red
+      "Missed Strike - Upper Zone" = "#85c1e9",   # light blue
+      "Missed Strike - Lower Zone" = "#1a5276"    # dark blue
+    ),
+    labels = c(
+      "Missed Ball - Upper Zone"   = "Upper Zone",
+      "Missed Ball - Lower Zone"   = "Lower Zone",
+      "Missed Strike - Upper Zone" = "Upper Zone",
+      "Missed Strike - Lower Zone" = "Lower Zone"
+    )
+  ) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position    = "bottom",
+    legend.title       = element_text(),
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(color = "grey50"),
+    strip.text         = element_text(face = "bold", size = 12)
+  ) +
+  labs(
+    title    = "Where missed calls happen by batter height",
+    subtitle = "Upper vs lower zone — split by miss type",
+    x        = NULL,
+    y        = "% of missed calls in zone"
+  )
+
+ggplotly(p6, tooltip = c("x","y","fill")) %>%
+  layout(margin = list(b = 100))
+```
+
+```{r ch4_table, echo=FALSE}
+height_summary %>%
+  mutate(
+    miss_rate        = percent(miss_rate,        accuracy = 0.1),
+    missed_str_rate  = percent(missed_str_rate,  accuracy = 0.1),
+    missed_ball_rate = percent(missed_ball_rate, accuracy = 0.1),
+    total            = format(total,  big.mark = ","),
+    missed           = format(missed, big.mark = ",")
+  ) %>%
+  select(
+    `Height`         = height_bucket,
+    `Total`          = total,
+    `Missed`         = missed,
+    `Miss Rate`      = miss_rate,
+    `Miss Strike%`   = missed_str_rate,
+    `Miss Ball%`     = missed_ball_rate
+  ) %>%
+  kable(align = c("l","r","r","r","r","r"),
+        caption = "Miss rate by batter height bucket, 2022-2025 combined") %>%
+  kable_styling(
+    bootstrap_options = c("striped","hover","condensed"),
+    full_width        = FALSE
+  )
+```
+
+The location charts reveal what the overall rate conceals. For shorter batters, missed strikes concentrate in the **upper zone** — pitches inside the zone near the top are being called balls. For taller batters, the pattern inverts — missed strikes concentrate in the **lower zone**.
+
+The missed ball pattern mirrors this exactly. Shorter batters get squeezed at the bottom — pitches outside the zone below the knee are called strikes. Taller batters get squeezed at the top.
+
+In plain terms: umpires appear to anchor to a standard zone reference point rather than fully adjusting to each batter's personal zone. Short batters get a zone that runs too low. Tall batters get a zone that runs too high. The rulebook says every batter gets their own zone. The data says otherwise.
+
+This does not mean umpires are worse for certain heights — the overall miss rate is nearly identical. It means the **direction** of the error is predictable based on body type. A predictable, systematic error is exactly what ABS was designed to eliminate.
+
+---
+
+## Conclusion: Why ABS Was the Only Answer
+
+```{r conclusion_data, echo=FALSE}
+# Year over year improvement calculation
+yr_summary <- df %>%
+  group_by(game_year) %>%
+  summarise(
+    decisions = n(),
+    missed    = sum(call_result != "correct"),
+    .groups   = "drop"
+  ) %>%
+  mutate(miss_rate = missed / decisions)
+
+improvement <- yr_summary %>%
+  filter(game_year %in% c(2022, 2025)) %>%
+  summarise(
+    improvement = first(miss_rate) - last(miss_rate)
+  ) %>%
+  pull(improvement)
+```
+
+Umpires were getting better. From 2022 to 2025, the miss rate dropped from 7.5% to 7.2% — a modest but real improvement over four seasons. By 2025, umpires were missing roughly one fewer call per game than they were in 2022. That is not nothing.
+
+But improvement was never going to be enough. Here is why.
+
+**The problem was not effort.** Every major league umpire is a professional who has spent decades developing their craft. The miss rate did not exist because umpires were not trying. It existed because the human visual system has measurable limitations when tracking a small object moving at high velocity across a defined boundary.
+
+**The problem was not consistency.** The miss rate was remarkably stable across four seasons — 7.2% to 7.5% every year. Umpires were not having good years and bad years. They were performing at the ceiling of human capability, and that ceiling produced roughly 11 missed calls per game.
+
+**The problem was systematic bias.** Three findings in this analysis are difficult to explain as random error:
+
+- Miss rates vary by nearly **three times** depending on the ball-strike count — with hitter's counts consistently producing the highest miss rates and pitcher's counts the lowest
+- Certain pitch types — particularly late-moving pitches like sinkers and cutters — are missed at nearly double the rate of off-speed pitches, in both directions
+- The direction of missed calls reverses predictably by batter height — short batters get squeezed low, tall batters get squeezed high
+
+Random error does not produce patterns this consistent across 1.4 million pitches and four seasons. Systematic bias does.
+
+**The 2025 overcorrection is the most telling data point of all.** In the final season before ABS, umpires called more pitches outside the zone as strikes than they missed strikes inside the zone — the ratio inverted for the first time in the four-season window. Umpires, aware of the scrutiny, adjusted. And in adjusting, they overcorrected. This is not a criticism — it is a demonstration of the core problem. A human being cannot simultaneously track a 95 mph pitch, locate it precisely relative to a personalized zone boundary, and account for count situation, batter height, and pitch movement without introducing systematic bias. The cognitive load is simply too high.
+
+ABS does not eliminate the human element from baseball. Pitchers still throw. Batters still swing. Managers still manage. What ABS eliminates is the one part of the game that was never truly a human skill to begin with — placing a moving object within a defined boundary to a precision of fractions of an inch, thousands of times per game, without fatigue or bias.
+
+The data does not say umpires failed. It says the task was always beyond what any human could do perfectly. ABS is not a punishment. It is an acknowledgment.
+
+---
+
+## Methodology Notes
+
+### Data Source
+All pitch data was sourced from MLB Statcast via the `pybaseball` Python library, covering the 2022 through 2025 regular seasons. A total of `r format(nrow(df), big.mark=",")` called pitches were analyzed — every pitch resulting in a called strike, called ball, or blocked ball (recoded as ball) across all four seasons.
+
+### Strike Zone Definition
+The strike zone was defined using Hawk-Eye measured boundaries (`sz_top`, `sz_bot`) provided by Statcast for each individual pitch. These boundaries reflect the actual measured zone for that specific batter in that specific stance — not a rulebook estimate derived from height.
+
+Horizontal boundaries were set at ±0.8333 feet from the center of the plate, incorporating the physical width of home plate (17 inches) plus half the diameter of a baseball on each side.
+
+A **1.45 inch ball radius buffer** was applied to all zone boundaries. A pitch was classified as a missed call only when the entire baseball — not just its center — was outside the zone. This represents the most conservative and defensible definition of a missed call, and is consistent with the rulebook definition that a pitch need only clip the zone to be a legal strike.
+
+### Miss Classification
+Each pitch was classified into one of three categories:
+
+- **Correct** — the umpire's call matched the zone determination
+- **Missed Strike** — called ball, pitch was inside the zone (favors batter)
+- **Missed Ball** — called strike, pitch was outside the zone (favors pitcher)
+
+Missed calls were further classified into six severity tiers based on distance from the nearest zone boundary, from broadcast threshold (< 0.1 inches) to egregious (2+ baseball widths).
+
+### Batter Height
+Player heights were retrieved from the MLB Stats API and joined to the dataset by MLBAM player ID. Height coverage was `r percent(mean(!is.na(df$batter_height_in)), accuracy = 0.1)` of all pitches analyzed.
+
+### Limitations
+This analysis evaluates ball-strike calls against the Hawk-Eye measured zone. It does not account for catcher framing, umpire fatigue, or game-level context beyond ball-strike count. Umpire-level analysis was not possible as umpire identifiers were not available in the Statcast data for these seasons.
